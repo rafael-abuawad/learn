@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0002 — Mapping Slots &amp; keccak256</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    .mem-diagram {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      line-height: 1.35;
+      overflow-x: auto;
+      white-space: pre;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1rem;
+      margin: 1rem 0;
+    }
+    table.pattern-table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.82rem; }
+    .pattern-table th, .pattern-table td { text-align: left; padding: 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .pattern-table th { font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0002</div>
+  <h1>Mapping Slots &amp; keccak256</h1>
+  <p class="subtitle">Derive balance, allowance, and nonce slots by hand — the core skill for reading Solady ERC20.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="0001-yul-for-solidity-devs.html">← 0001</a>
+  ·
+  <a href="../reference/storage-slot-layout.html">Storage slots</a>
+</nav>
+
+<h2>The rule you already know</h2>
+
+<p>
+  In Solidity, a mapping does not occupy a contiguous run of slots. The base slot holds nothing useful by itself; each key’s value lives at:
+</p>
+
+<pre><code>slot(key) = keccak256(abi.encode(key, baseSlot))</code></pre>
+
+<p>
+  Nested mapping <code>allowances[owner][spender]</code> nests the formula:
+</p>
+
+<pre><code>innerBase = keccak256(abi.encode(owner, baseSlot))
+valueSlot = keccak256(abi.encode(spender, innerBase))</code></pre>
+
+<p>
+  Solady replaces compiler-assigned <code>baseSlot</code> (0, 1, 2…) with fixed <strong>seed constants</strong> so inherited storage never collides. The math is identical — only the base identifier changes.
+</p>
+
+<aside class="sidenote">
+  Vyper maps work the same way at the EVM level. If you’ve ever wondered where a balance “really” lives on chain, it’s always a <code>keccak256</code> away from a namespace slot.
+</aside>
+
+<p>
+  Primary source: <a href="https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html">Solidity storage layout</a>.
+</p>
+
+<h2>Three Solady patterns — side by side</h2>
+
+<table class="pattern-table">
+  <tr>
+    <th>Mapping</th>
+    <th>Seed constant</th>
+    <th>Keys</th>
+    <th>Hash length</th>
+  </tr>
+  <tr>
+    <td><code>balanceOf</code></td>
+    <td><code>_BALANCE_SLOT_SEED</code></td>
+    <td><code>owner</code></td>
+    <td><code>0x20</code> (32 bytes)</td>
+  </tr>
+  <tr>
+    <td><code>allowance</code></td>
+    <td><code>_ALLOWANCE_SLOT_SEED</code></td>
+    <td><code>owner</code>, <code>spender</code></td>
+    <td><code>0x34</code> (52 bytes)</td>
+  </tr>
+  <tr>
+    <td><code>nonces</code></td>
+    <td><code>_NONCES_SLOT_SEED</code></td>
+    <td><code>owner</code></td>
+    <td><code>0x20</code> (32 bytes)</td>
+  </tr>
+</table>
+
+<h2>Pattern A — single key (balance &amp; nonce)</h2>
+
+<p>From Solady <code>balanceOf</code>:</p>
+
+<pre><code><span class="fn">mstore</span>(0x0c, _BALANCE_SLOT_SEED)
+<span class="fn">mstore</span>(0x00, owner)
+result := <span class="fn">sload</span>(<span class="fn">keccak256</span>(0x0c, 0x20))</code></pre>
+
+<p><code>nonces(owner)</code> is the same shape with <code>_NONCES_SLOT_SEED</code>.</p>
+
+<h3>Why start the hash at 0x0c?</h3>
+
+<p>
+  <code>0x0c</code> = 12 decimal = the ABI padding before a 20-byte address in a 32-byte word.
+  <code>mstore</code> is <strong>big-endian</strong>: the MSB of the word is at the lowest memory offset.
+</p>
+
+<p>Execute in order — seed first, owner second:</p>
+
+<div class="mem-diagram">Step 1 — mstore(0x0c, seed)
+mem:  0x0c ───────────── 0x27 │ 0x28 ── 0x2b
+      [    28 zero bytes     ] [ seed 4B ]
+
+Step 2 — mstore(0x00, owner)  (overwrites only 0x00..0x1f)
+mem:  0x00 ── 0x0b │ 0x0c ─────── 0x1f │ 0x20 ── 0x27 │ 0x28 ── 0x2b
+      [ 12 zero  ] [ address 20B ] [ 8 zero ] [ seed 4B ]
+      └ owner mstore ──────────┘   └── untouched from step 1 ──┘
+
+Step 3 — keccak256(0x0c, 0x20)  hashes exactly:
+      [ address 20B │ pad 8B │ seed 4B ]  = 32 bytes → storage slot</div>
+
+<p>
+  Hashing from <code>0x00</code> for 32 bytes would include leading padding but drop the seed.
+  Hashing 64 bytes from <code>0x00</code> is the standard <code>abi.encode</code> path — correct but costlier.
+  Starting at <code>0x0c</code> is the gas-optimized overlap trick.
+</p>
+
+<h2>Pattern B — two keys (allowance)</h2>
+
+<p>From Solady <code>allowance</code>:</p>
+
+<pre><code><span class="fn">mstore</span>(0x20, spender)
+<span class="fn">mstore</span>(0x0c, _ALLOWANCE_SLOT_SEED)
+<span class="fn">mstore</span>(0x00, owner)
+result := <span class="fn">sload</span>(<span class="fn">keccak256</span>(0x0c, 0x34))</code></pre>
+
+<div class="mem-diagram">After all three mstores (spender, seed, owner):
+
+mem 0x00..0x1f:  owner word   [12 pad | owner 20B]
+mem 0x20..0x3f:  spender word [12 pad | spender 20B]
+mem 0x28..0x2b:  seed tail (from seed mstore at 0x0c, untouched by owner)
+
+keccak256(0x0c, 0x34) — 52 bytes from 0x0c through 0x3f:
+  owner address + padding + full spender word + seed tail
+  = nested mapping(owner → spender) in one hash</div>
+
+<p>
+  Fifty-two bytes = 32 bytes from the owner region (starting at byte 12) plus the full 32-byte spender word. This is the nested mapping formula folded into one hash — no <code>abi.encode</code> call at runtime.
+</p>
+
+<h2>Pattern C — packed single key (transfer hot path)</h2>
+
+<p>When <code>from</code> is already on stack, Solady saves one <code>mstore</code>:</p>
+
+<pre><code><span class="keyword">let</span> from_ := <span class="fn">shl</span>(96, from)
+<span class="fn">mstore</span>(0x0c, <span class="fn">or</span>(from_, _BALANCE_SLOT_SEED))
+fromBalanceSlot := <span class="fn">keccak256</span>(0x0c, 0x20)</code></pre>
+
+<p>
+  <code>or(shl(96, from), seed)</code> at <code>mstore(0x0c, …)</code> builds the same 32-byte preimage in one write:
+  seed at <code>mem[0x28..0x2b]</code>, address at <code>mem[0x0c..0x1f]</code> (via shifted word layout).
+</p>
+
+<h3>Clean vs pack — don’t mix them up</h3>
+
+<table class="pattern-table">
+  <tr><th>Idiom</th><th>Purpose</th><th>When</th></tr>
+  <tr>
+    <td><code>shr(96, shl(96, addr))</code></td>
+    <td>Canonical address in <strong>low</strong> 160 bits</td>
+    <td><code>permit</code>, <code>eq</code> with <code>ecrecover</code></td>
+  </tr>
+  <tr>
+    <td><code>shl(96, addr)</code></td>
+    <td>Address in <strong>high</strong> 160 bits for <code>or</code> with seed</td>
+    <td><code>_transfer</code>, <code>transferFrom</code> slot lookup</td>
+  </tr>
+</table>
+
+<p>
+  Pattern C does <strong>not</strong> need <code>shr(96, shl(96, from))</code> first: a typed Solidity <code>address</code> is already clean, and <code>shl(96, …)</code> only pulls from the low 160 bits anyway. Adding clean-before-pack is redundant here.
+</p>
+
+<h2>Direct slot (totalSupply)</h2>
+
+<p>Not every value is a mapping. Total supply uses a fixed slot — no hash:</p>
+
+<pre><code>result := <span class="fn">sload</span>(_TOTAL_SUPPLY_SLOT)   <span class="comment">// 0x05345cdf77eb68f44c</span></code></pre>
+
+<p>When you write your own ERC20 in Yul, decide upfront: which values are direct slots vs hashed mappings.</p>
+
+<h2>Trace it yourself</h2>
+
+<p>Given <code>owner = 0x1111…1111</code> (20 bytes), mentally execute Pattern A:</p>
+
+<ol style="font-family: var(--sans); font-size: 0.92rem; line-height: 1.7;">
+  <li>After both <code>mstore</code>s, what 32 bytes does <code>keccak256(0x0c, 0x20)</code> see?</li>
+  <li>That digest is the storage slot number — <code>sload</code> reads the balance there.</li>
+  <li>Change only the seed constant — same owner maps to a <em>different</em> slot (different mapping namespace).</li>
+</ol>
+
+<div class="callout">
+  <strong>Checkpoint</strong>
+  Open <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">ERC20.sol</a> and find all three hash lengths: <code>0x20</code>, <code>0x34</code>, and the direct <code>sload</code>. You should recognize each before moving on.
+</div>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="0"
+     data-explain="allowance hashes 0x34 (52) bytes from 0x0c: overlapping seed + owner tail + full spender word. balanceOf and nonces use 0x20 (32) bytes.">
+  <h3>Hash length</h3>
+  <p class="prompt">Solady’s <code>allowance(owner, spender)</code> uses <code>keccak256(0x0c, ???)</code>. What length?</p>
+  <div class="quiz-options">
+    <button data-index="0">Length is 0x34 — fifty-two bytes total</button>
+    <button data-index="1">Length is 0x20 — thirty-two bytes total</button>
+    <button data-index="2">Length is 0x40 — sixty-four bytes total</button>
+    <button data-index="3">Length is 0x14 — twenty bytes total only</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="1"
+     data-explain="shl(96, from) puts the address in high bits so or(from_, SEED) packs seed in the low 32 bits — one mstore instead of two.">
+  <h3>Packed pattern</h3>
+  <p class="prompt">Why does <code>_transfer</code> use <code>or(shl(96, from), SEED)</code> instead of two separate mstores?</p>
+  <div class="quiz-options">
+    <button data-index="0">keccak256 requires addresses in high bits always</button>
+    <button data-index="1">One mstore packs seed and address together</button>
+    <button data-index="2">shl prevents overflow when subtracting balance</button>
+    <button data-index="3">or merges two different storage slots into one</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="2"
+     data-explain="Each mapping namespace uses its own seed constant. Same owner, different seed → different slot → no collision between balances and nonces.">
+  <h3>Namespace seeds</h3>
+  <p class="prompt">Why does Solady use _BALANCE_SLOT_SEED instead of compiler slot 1?</p>
+  <div class="quiz-options">
+    <button data-index="0">keccak256 only accepts four-byte seed inputs</button>
+    <button data-index="1">Slot one is reserved for totalSupply always</button>
+    <button data-index="2">Avoid inheritance collisions with namespaced slots</button>
+    <button data-index="3">Smaller seeds cost less gas when hashed</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  Given any <code>owner</code> and <code>spender</code>, you can write the scratch <code>mstore</code> sequence and hash length for balance, allowance, or nonce — and explain why Solady sometimes packs with <code>shl</code> + <code>or</code>.
+</div>
+
+<h2>Next</h2>
+<p>
+  <strong>Lesson 0003</strong> — custom errors from Yul: <code>mstore(0x00, selector); revert(0x1c, 0x04)</code> and the control-flow patterns around them.
+</p>
+
+<footer class="lesson-footer">
+  <p><strong>Primary source:</strong> <a href="https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html">Solidity storage layout</a> · <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol#L75-L98">Solady ERC20 storage comments</a></p>
+  <p><strong>Stuck?</strong> Ask your teacher in chat — try “derive the allowance slot for owner X and spender Y step by step.”</p>
+  <ul>
+    <li><a href="0001-yul-for-solidity-devs.html">Lesson 0001</a></li>
+    <li><a href="../reference/storage-slot-layout.html">Storage slot layout reference</a></li>
+    <li><a href="0003-custom-errors-revert.html">Lesson 0003 →</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

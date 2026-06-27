@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0003 — Custom Errors &amp; Revert</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0003</div>
+  <h1>Custom Errors &amp; Revert</h1>
+  <p class="subtitle">How Solady reverts from Yul with 4-byte selectors and tight control flow.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="0002-mapping-slots-keccak256.html">← 0002</a>
+  ·
+  <a href="../reference/custom-errors.html">Error reference</a>
+</nav>
+
+<h2>From Solidity error to Yul revert</h2>
+
+<p>In Solidity you write:</p>
+
+<pre><code><span class="keyword">error</span> InsufficientBalance();</code></pre>
+
+<p>At runtime a revert carries the selector <code>bytes4(keccak256("InsufficientBalance()"))</code> = <code>0xf4d678b8</code>. Solady skips the compiler and writes it directly:</p>
+
+<pre><code><span class="keyword">if</span> <span class="fn">gt</span>(amount, fromBalance) {
+    <span class="fn">mstore</span>(0x00, 0xf4d678b8)   <span class="comment">// `InsufficientBalance()`.</span>
+    <span class="fn">revert</span>(0x1c, 0x04)
+}</code></pre>
+
+<p>Primary source: <a href="https://docs.soliditylang.org/en/latest/contracts.html#errors-and-the-revert-statement">Solidity custom errors</a>.</p>
+
+<h2>Why revert(0x1c, 0x04)?</h2>
+
+<p>
+  <code>mstore(0x00, selector)</code> writes a full 32-byte word big-endian.
+  The 4-byte selector sits at <code>mem[0x1c..0x1f]</code> — the last 4 bytes of the word.
+  <code>revert(0x1c, 0x04)</code> returns exactly those 4 bytes to the caller.
+</p>
+
+<aside class="sidenote">
+  Vyper’s <code>@revert</code> with error data follows the same ABI rule: 4-byte selector first. In Yul you build that blob by hand.
+</aside>
+
+<p>See the byte diagram in <a href="../reference/custom-errors.html">custom errors reference</a>.</p>
+
+<h2>Control flow in Yul</h2>
+
+<p>Solady uses inverted comparisons — revert on failure, fall through on success:</p>
+
+<pre><code><span class="comment">// Solidity: require(fromBalance >= amount)</span>
+<span class="keyword">if</span> <span class="fn">gt</span>(amount, fromBalance) { … revert … }
+
+<span class="comment">// Solidity: if (allowance != type(uint256).max) { spend }</span>
+<span class="keyword">if</span> <span class="fn">add</span>(allowance_, 1) {
+    <span class="keyword">if</span> <span class="fn">gt</span>(amount, allowance_) { … revert … }
+    <span class="fn">sstore</span>(allowanceSlot, <span class="fn">sub</span>(allowance_, amount))
+}</code></pre>
+
+<p>
+  The <code>add(allowance_, 1)</code> trick: when <code>allowance_</code> is <code>type(uint256).max</code>, addition wraps to 0 (falsy) — skip spending logic. Cheaper than an explicit max check.
+</p>
+
+<h2>Address cleaning before compare</h2>
+
+<pre><code>owner := <span class="fn">shr</span>(96, <span class="fn">shl</span>(96, owner))
+<span class="keyword">if</span> <span class="fn">iszero</span>(<span class="fn">eq</span>(<span class="fn">mload</span>(returndatasize()), owner)) { … InvalidPermit … }</code></pre>
+
+<p>Used in <code>permit</code> when comparing ecrecover output to the claimed owner. Lesson <a href="0007-permit-eip2612.html">0007</a> goes deeper.</p>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="2"
+     data-explain="mstore writes the selector at mem[0x1c..0x1f] (big-endian). revert(0x1c, 0x04) returns exactly those 4 bytes.">
+  <h3>Revert offset</h3>
+  <p class="prompt">After mstore(0x00, 0xf4d678b8), why does Solady call revert(0x1c, 0x04)?</p>
+  <div class="quiz-options">
+    <button data-index="0">0x1c is the free memory pointer location</button>
+    <button data-index="1">0x04 is the size of an address in bytes</button>
+    <button data-index="2">Selector sits at mem 0x1c through 0x1f</button>
+    <button data-index="3">0x1c skips the function signature prefix</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="1"
+     data-explain="When allowance is type(uint256).max, add(allowance_, 1) wraps to zero — the if body is skipped, so allowance is not decremented.">
+  <h3>Infinite allowance</h3>
+  <p class="prompt">What does if add(allowance_, 1) achieve in transferFrom?</p>
+  <div class="quiz-options">
+    <button data-index="0">Increments allowance before every transferFrom call</button>
+    <button data-index="1">Skips spend logic when allowance is max uint</button>
+    <button data-index="2">Detects overflow in allowance subtraction path</button>
+    <button data-index="3">Replaces the need for an approval event emit</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  You can read any Solady revert block, name the error from its hex selector, and explain why <code>revert(0x1c, 0x04)</code> is the offset used.
+</div>
+
+<h2>Next</h2>
+<p><strong>Lesson 0004</strong> — emitting <code>Transfer</code> and <code>Approval</code> with <code>log3</code>.</p>
+
+<footer class="lesson-footer">
+  <p><strong>Primary source:</strong> <a href="https://docs.soliditylang.org/en/latest/contracts.html#errors-and-the-revert-statement">Solidity errors</a> · <a href="../reference/custom-errors.html">Error reference</a></p>
+  <p><strong>Stuck?</strong> Ask your teacher — paste a revert block and ask which error it triggers.</p>
+  <ul>
+    <li><a href="0002-mapping-slots-keccak256.html">← Lesson 0002</a></li>
+    <li><a href="0004-events-log3.html">Lesson 0004 →</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

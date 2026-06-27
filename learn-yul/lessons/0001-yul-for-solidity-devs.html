@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0001 — Yul for Solidity &amp; Vyper Devs</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0001</div>
+  <h1>Yul for Solidity &amp; Vyper Devs</h1>
+  <p class="subtitle">What inline assembly is, why Solady uses it, and the memory patterns you’ll see everywhere.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="../reference/yul-opcodes-cheatsheet.html">Opcode cheatsheet</a>
+  ·
+  <a href="../reference/storage-slot-layout.html">Storage slots</a>
+</nav>
+
+<h2>Why Yul exists</h2>
+
+<p>
+  Solidity compiles to EVM bytecode. Along the way it may lower through <strong>Yul</strong> — a typed-ish, low-level IR where EVM opcodes are plain function calls: <code>sload</code>, <code>mstore</code>, <code>keccak256</code>.
+</p>
+
+<p>
+  You embed Yul inside Solidity with an <code>assembly { … }</code> block. Solady’s ERC20 inlines almost all hot-path logic there because high-level Solidity adds checks, copies, and ABI encoding you don’t always want to pay for.
+</p>
+
+<aside class="sidenote">
+  Vyper has <code>@revert</code> and tight storage access too, but no inline assembly. Think of Yul as writing the Vyper you <em>wish</em> the compiler emitted — by hand.
+</aside>
+
+<p>
+  Primary source: <a href="https://docs.soliditylang.org/en/latest/yul.html">Solidity Yul documentation</a>.
+</p>
+
+<h2>Anatomy of an inline block</h2>
+
+<p>Every Solady hot function follows the same skeleton:</p>
+
+<pre><code><span class="keyword">function</span> <span class="fn">totalSupply</span>() <span class="keyword">public</span> <span class="keyword">view</span> <span class="keyword">returns</span> (uint256 result) {
+    <span class="comment">/// @solidity memory-safe-assembly</span>
+    <span class="keyword">assembly</span> {
+        result := <span class="fn">sload</span>(_TOTAL_SUPPLY_SLOT)
+    }
+}</code></pre>
+
+<figure>
+  <pre><code><span class="comment">// Solidity side          // Yul side</span>
+<span class="keyword">returns</span> (uint256 result)  result := sload(slot)   <span class="comment">// write to named return</span>
+<span class="keyword">assembly</span> { … }            <span class="comment">// no `return` needed if filling named returns</span></code></pre>
+  <figcaption>Named return variables are writable from assembly — Solady uses this to avoid extra <code>return</code> opcodes.</figcaption>
+</figure>
+
+<h3>Syntax you’ll read constantly</h3>
+
+<ul>
+  <li><code>let x := …</code> — local variable (not persisted on chain)</li>
+  <li><code>if cond { … }</code> — no <code>else if</code>; nest or use <code>switch</code> for multi-way</li>
+  <li><code>for { init } condition { post } { body }</code> — C-style loops (rare in Solady ERC20)</li>
+  <li><code>function f(a, b) -&gt; r { … }</code> — inner Yul functions inside the block</li>
+  <li>Comments: <code>//</code> only</li>
+</ul>
+
+<p>
+  Types collapse to <code>u256</code> in the EVM dialect. Addresses, bools, and enums are just 256-bit words with conventions on which bits matter.
+</p>
+
+<h2>Scratch memory: the 0x00–0x3f band</h2>
+
+<p>
+  Solady’s ERC20 never allocates dynamic memory for mappings. It reuses a fixed <strong>scratch zone</strong> starting at byte offset <code>0x00</code> to build the input to <code>keccak256</code>.
+</p>
+
+<pre><code><span class="comment">// balanceOf(owner) — Solady ERC20.sol</span>
+<span class="fn">mstore</span>(0x0c, _BALANCE_SLOT_SEED)   <span class="comment">// step 1: seed at mem[0x28..0x2b]</span>
+<span class="fn">mstore</span>(0x00, owner)               <span class="comment">// step 2: address at mem[0x0c..0x1f]</span>
+result := <span class="fn">sload</span>(<span class="fn">keccak256</span>(0x0c, 0x20))  <span class="comment">// hash 32 bytes from 0x0c</span></code></pre>
+
+<p>
+  <code>mstore(offset, value)</code> writes a full 32-byte word. <code>keccak256(ptr, len)</code> hashes <code>len</code> bytes starting at <code>ptr</code>.
+</p>
+
+<aside class="sidenote">
+  <strong><code>mstore</code> is big-endian.</strong> The most significant byte of the word lands at <code>mem[offset]</code>; the least significant at <code>mem[offset + 31]</code>. An address in a word therefore sits at <code>mem[offset + 12]</code> through <code>mem[offset + 31]</code> — exactly 12 bytes of padding, then 20 bytes of address. That is why hashing from <code>0x0c</code> (12 decimal) works.
+</aside>
+
+<aside class="sidenote">
+  Solidity’s “zero slot” and “free memory pointer at 0x40” still exist. Solady’s scratch patterns deliberately overlap 0x00–0x3f — safe here because these view/write functions don’t call out to arbitrary external code mid-scratch.
+</aside>
+
+<p>See <a href="../reference/storage-slot-layout.html">storage slot layout</a> for the full mapping formula.</p>
+
+<h2>Storage: <code>sload</code> / <code>sstore</code></h2>
+
+<p>
+  In Solidity you think <code>mapping(address =&gt; uint256) balances</code>. In Yul you think <strong>slot number</strong>:
+</p>
+
+<pre><code>slot := <span class="fn">keccak256</span>(packedKeyData)
+value := <span class="fn">sload</span>(slot)
+<span class="fn">sstore</span>(slot, newValue)</code></pre>
+
+<p>
+  Solady chooses <strong>namespaced seeds</strong> (<code>_BALANCE_SLOT_SEED = 0x87a211a2</code>) instead of compiler-assigned slot 0, 1, 2… so inherited contracts won’t collide. That’s a design choice you’ll replicate when writing your own ERC20 core.
+</p>
+
+<h2>Addresses as words</h2>
+
+<p>
+  An <code>address</code> is 20 bytes but occupies a 32-byte word. The top 12 bytes should be zero. Solady enforces that with:
+</p>
+
+<pre><code>owner := <span class="fn">shr</span>(96, <span class="fn">shl</span>(96, owner))   <span class="comment">// clean upper 96 bits</span>
+from_ := <span class="fn">shl</span>(96, from)             <span class="comment">// align address to high bits for or()</span></code></pre>
+
+<p>
+  <code>shl(96, addr)</code> moves the address to bits 96–255. Solady then <code>or</code>s it with a 4-byte seed at the low end — packing key + namespace into one word before hashing.
+</p>
+
+<h2>What you already know — translated</h2>
+
+<table style="width:100%; font-family: var(--sans); font-size: 0.88rem; border-collapse: collapse;">
+  <tr style="border-bottom: 1px solid var(--border);">
+    <th style="text-align:left; padding: 0.4rem 0;">Solidity / Vyper</th>
+    <th style="text-align:left; padding: 0.4rem 0;">Yul / Solady</th>
+  </tr>
+  <tr><td style="padding: 0.35rem 0;"><code>error InsufficientBalance()</code></td><td><code>mstore(0x00, 0xf4d678b8); revert(0x1c, 0x04)</code></td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>emit Transfer(from, to, amt)</code></td><td><code>log3(mem, 32, TOPIC, from, to)</code></td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>balances[owner]</code></td><td><code>sload(keccak256(scratch, len))</code></td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>msg.sender</code></td><td><code>caller()</code></td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>require(a &gt;= b)</code></td><td><code>if gt(b, a) { revert… }</code></td></tr>
+</table>
+
+<p>Lessons <a href="0002-mapping-slots-keccak256.html">0002</a>–<a href="0003-custom-errors-revert.html">0003</a> unpack the middle rows in detail.</p>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="0"
+     data-explain="After seed-first then owner-second, mem[0x0c..0x1f] is the full address, mem[0x20..0x27] is padding, mem[0x28..0x2b] is the seed. keccak256(0x0c, 0x20) hashes all 32 bytes — a compact mapping preimage.">
+  <h3>Scratch layout</h3>
+  <p class="prompt">In Solady’s <code>balanceOf</code>, after <code>mstore(0x0c, seed)</code> and <code>mstore(0x00, owner)</code>, what does <code>keccak256(0x0c, 0x20)</code> hash?</p>
+  <div class="quiz-options">
+    <button data-index="0">Address twenty bytes plus pad plus seed</button>
+    <button data-index="1">Only the twenty-byte address at 0x00</button>
+    <button data-index="2">The entire sixty-four byte scratch region</button>
+    <button data-index="3">Only the four-byte seed at 0x0c alone</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="2"
+     data-explain="Named return variables like `result` are in scope inside assembly. Solady assigns directly instead of using a `return` opcode — fewer bytes, same ABI output.">
+  <h3>Named returns</h3>
+  <p class="prompt">Why does Solady write <code>result := sload(...)</code> instead of <code>return(0, 32)</code> in view functions?</p>
+  <div class="quiz-options">
+    <button data-index="0">Assembly blocks cannot use return opcode</button>
+    <button data-index="1">sload output must go through memory first</button>
+    <button data-index="2">Named returns are writable from assembly</button>
+    <button data-index="3">return opcode breaks memory-safe annotation</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  You can open Solady’s <code>totalSupply</code> and <code>balanceOf</code> and narrate each line: what gets stored where in memory, which slot is loaded, and why a seed constant appears.
+</div>
+
+<h2>Next</h2>
+<p>
+  <strong>Lesson 0002</strong> — mapping slots &amp; <code>keccak256</code> in depth (balance, allowance, nonce patterns side-by-side).
+</p>
+
+<footer class="lesson-footer">
+  <p><strong>Primary source:</strong> <a href="https://docs.soliditylang.org/en/latest/yul.html">Solidity Yul spec</a> · <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady ERC20.sol</a></p>
+  <p><strong>Stuck?</strong> Ask your teacher in chat — paste any Yul snippet and ask “what does this line do?”</p>
+  <ul>
+    <li><a href="../reference/yul-opcodes-cheatsheet.html">Yul opcode cheatsheet</a></li>
+    <li><a href="../reference/storage-slot-layout.html">Storage slot layout</a></li>
+    <li><a href="0002-mapping-slots-keccak256.html">Lesson 0002 →</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

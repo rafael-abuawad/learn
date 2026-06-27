@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference — Yul Opcode Cheatsheet</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.82rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-weight: 600; }
+    td code { font-size: 0.95em; }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Reference</div>
+  <h1>Yul Opcode Cheatsheet</h1>
+  <p class="subtitle">EVM builtins used in Solady ERC20 — print and keep beside your editor.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="../lessons/index.html">← Lessons</a>
+  ·
+  <a href="storage-slot-layout.html">Storage slots →</a>
+  ·
+  <a href="glossary.html">Glossary</a>
+</nav>
+
+<h2>Storage &amp; memory</h2>
+<table>
+  <tr><th>Opcode</th><th>Meaning</th><th>Solady example</th></tr>
+  <tr><td><code>sload(slot)</code></td><td>Read one storage word</td><td><code>fromBalance := sload(fromBalanceSlot)</code></td></tr>
+  <tr><td><code>sstore(slot, val)</code></td><td>Write one storage word</td><td><code>sstore(fromBalanceSlot, sub(fromBalance, amount))</code></td></tr>
+  <tr><td><code>mload(ptr)</code></td><td>Read 32 bytes from memory</td><td><code>mload(0x0c)</code> after packing</td></tr>
+  <tr><td><code>mstore(ptr, val)</code></td><td>Write 32 bytes to memory</td><td><code>mstore(0x00, owner)</code></td></tr>
+  <tr><td><code>mstore8(ptr, byte)</code></td><td>Write 1 byte</td><td>Rare in ERC20; used in string code</td></tr>
+</table>
+
+<h2>Hashing &amp; crypto</h2>
+<table>
+  <tr><th>Opcode</th><th>Meaning</th><th>Solady example</th></tr>
+  <tr><td><code>keccak256(ptr, len)</code></td><td>Hash <code>len</code> bytes at <code>ptr</code></td><td>Mapping slot derivation</td></tr>
+</table>
+
+<h2>Arithmetic &amp; compare</h2>
+<table>
+  <tr><th>Opcode</th><th>Meaning</th><th>Notes</th></tr>
+  <tr><td><code>add(x,y)</code> <code>sub</code> <code>mul</code></td><td>Wrapping arithmetic</td><td>Overflow checks are manual: <code>if lt(after, before) revert</code></td></tr>
+  <tr><td><code>gt(x,y)</code> <code>lt</code> <code>eq</code></td><td>Comparisons → 0 or 1</td><td><code>if gt(amount, fromBalance) { revert… }</code></td></tr>
+  <tr><td><code>not(x)</code></td><td>Bitwise NOT</td><td><code>if not(allowance_) { … }</code> — true when allowance is zero</td></tr>
+  <tr><td><code>or(x,y)</code> <code>xor</code> <code>and</code></td><td>Bitwise</td><td>Pack seed + address: <code>or(shl(96, from), SEED)</code></td></tr>
+  <tr><td><code>shl(n,x)</code> <code>shr</code></td><td>Shift</td><td>Address cleaning / alignment</td></tr>
+</table>
+
+<h2>Environment</h2>
+<table>
+  <tr><th>Opcode</th><th>Solidity equivalent</th></tr>
+  <tr><td><code>caller()</code></td><td><code>msg.sender</code></td></tr>
+  <tr><td><code>callvalue()</code></td><td><code>msg.value</code></td></tr>
+  <tr><td><code>calldataload(p)</code></td><td>Read tx input at byte offset</td></tr>
+  <tr><td><code>timestamp()</code></td><td><code>block.timestamp</code></td></tr>
+  <tr><td><code>chainid()</code></td><td><code>block.chainid</code></td></tr>
+  <tr><td><code>address()</code></td><td><code>address(this)</code></td></tr>
+</table>
+
+<h2>Logs &amp; revert</h2>
+<table>
+  <tr><th>Opcode</th><th>Meaning</th></tr>
+  <tr><td><code>log3(mem, len, t0, t1, t2)</code></td><td>Event with 3 indexed topics + data</td></tr>
+  <tr><td><code>revert(ptr, len)</code></td><td>Revert with returndata (custom errors)</td></tr>
+</table>
+
+<h2>Calls</h2>
+<table>
+  <tr><th>Opcode</th><th>Meaning</th></tr>
+  <tr><td><code>call(g, addr, val, in, insz, out, outsz)</code></td><td>External call</td></tr>
+  <tr><td><code>staticcall(…)</code></td><td>View call — <code>ecrecover</code> in <code>permit</code></td></tr>
+  <tr><td><code>returndatasize()</code></td><td>Bytes returned by last call</td></tr>
+</table>
+
+<p style="font-family: var(--sans); font-size: 0.85rem; color: var(--muted);">
+  Source: <a href="https://docs.soliditylang.org/en/latest/yul.html#evm-dialect">Solidity Yul EVM dialect</a> · Gas details: <a href="https://www.evm.codes/">evm.codes</a>
+</p>
+
+</body>
+</html>

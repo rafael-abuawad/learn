@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0004 — Events &amp; log3</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0004</div>
+  <h1>Events &amp; log3</h1>
+  <p class="subtitle">Precomputed topic hashes, indexed addresses, and amount in data.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="0003-custom-errors-revert.html">← 0003</a>
+  ·
+  <a href="../reference/events-log3.html">Events reference</a>
+</nav>
+
+<h2>Solidity event → EVM log</h2>
+
+<pre><code><span class="keyword">event</span> Transfer(<span class="keyword">address indexed</span> from, <span class="keyword">address indexed</span> to, uint256 amount);</code></pre>
+
+<p>Compiles to:</p>
+
+<ul>
+  <li><strong>topic0</strong> — <code>keccak256("Transfer(address,address,uint256)")</code></li>
+  <li><strong>topic1, topic2</strong> — indexed <code>from</code>, <code>to</code> (32-byte left-padded addresses)</li>
+  <li><strong>data</strong> — non-indexed <code>amount</code> (32 bytes)</li>
+</ul>
+
+<p>Solady precomputes topic0 as <code>_TRANSFER_EVENT_SIGNATURE</code> — never pays keccak at runtime for the signature string.</p>
+
+<p>Primary source: <a href="https://docs.soliditylang.org/en/latest/contracts.html#events">Solidity events</a>.</p>
+
+<h2>log3 in transfer</h2>
+
+<pre><code><span class="fn">mstore</span>(0x20, amount)
+<span class="fn">log3</span>(0x20, 0x20, _TRANSFER_EVENT_SIGNATURE, <span class="fn">caller</span>(), <span class="fn">shr</span>(96, <span class="fn">mload</span>(0x0c)))</code></pre>
+
+<table style="width:100%; font-family: var(--sans); font-size: 0.88rem; border-collapse: collapse; margin: 1rem 0;">
+  <tr style="border-bottom: 1px solid var(--border);">
+    <th style="text-align:left; padding: 0.4rem 0;">Argument</th>
+    <th style="text-align:left; padding: 0.4rem 0;">Role</th>
+  </tr>
+  <tr><td style="padding: 0.35rem 0;"><code>0x20, 0x20</code></td><td>Data: 32-byte amount at mem[0x20..0x3f]</td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>_TRANSFER_EVENT_SIGNATURE</code></td><td>topic0 — event hash</td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>caller()</code></td><td>topic1 — <code>from</code></td></tr>
+  <tr><td style="padding: 0.35rem 0;"><code>shr(96, mload(0x0c))</code></td><td>topic2 — <code>to</code> recovered from scratch</td></tr>
+</table>
+
+<h2>Recovering addresses from scratch</h2>
+
+<p>
+  After <code>mstore(0x00, to)</code> for the recipient balance slot, the address still sits at <code>mem[0x0c..0x1f]</code>.
+  <code>mload(0x0c)</code> reads that word; <code>shr(96, …)</code> extracts the address for use as an indexed topic (left-padded by the LOG opcode).
+</p>
+
+<p>Same trick in <code>approve</code>: <code>shr(96, mload(0x2c))</code> reads the spender from allowance scratch.</p>
+
+<h2>Mint and burn topics</h2>
+
+<pre><code><span class="comment">// _mint: from = address(0)</span>
+<span class="fn">log3</span>(0x20, 0x20, _TRANSFER_EVENT_SIGNATURE, 0, <span class="fn">shr</span>(96, <span class="fn">mload</span>(0x0c)))
+
+<span class="comment">// _burn: to = address(0)</span>
+<span class="fn">log3</span>(0x00, 0x20, _TRANSFER_EVENT_SIGNATURE, <span class="fn">shr</span>(96, <span class="fn">shl</span>(96, from)), 0)</code></pre>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="0"
+     data-explain="log3 takes (dataOffset, dataLen, topic0, topic1, topic2). Three indexed fields = LOG3. Amount is non-indexed data in memory.">
+  <h3>log3 arity</h3>
+  <p class="prompt">ERC20 Transfer has two indexed addresses and one uint256 amount. Which opcode?</p>
+  <div class="quiz-options">
+    <button data-index="0">log3 — three topics plus data payload</button>
+    <button data-index="1">log2 — two topics plus data payload</button>
+    <button data-index="2">log4 — four topics plus data payload</button>
+    <button data-index="3">log1 — one topic plus data payload only</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="3"
+     data-explain="After mstore(0x00, to) for balance slot lookup, the address remains at mem[0x0c..0x1f]. mload(0x0c) then shr(96, ...) extracts it for the indexed to topic.">
+  <h3>Topic extraction</h3>
+  <p class="prompt">In transfer(), why is the to topic shr(96, mload(0x0c))?</p>
+  <div class="quiz-options">
+    <button data-index="0">0x0c holds the keccak256 digest of the slot</button>
+    <button data-index="1">mload always returns addresses in high bits only</button>
+    <button data-index="2">shr clears the seed bytes before logging event</button>
+    <button data-index="3">Address still in scratch mem after mstore to</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  You can parse any Solady <code>log3</code> call: identify topic0 hash, indexed addresses, and where the amount is in memory.
+</div>
+
+<h2>Next</h2>
+<p><strong>Lesson 0005</strong> — line-by-line walkthrough of <code>transfer</code>, <code>_mint</code>, and <code>_burn</code>.</p>
+
+<footer class="lesson-footer">
+  <p><strong>Primary source:</strong> <a href="https://docs.soliditylang.org/en/latest/contracts.html#events">Solidity events</a> · <a href="../reference/events-log3.html">Events reference</a></p>
+  <ul>
+    <li><a href="0003-custom-errors-revert.html">← Lesson 0003</a></li>
+    <li><a href="0005-read-transfer-mint.html">Lesson 0005 →</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

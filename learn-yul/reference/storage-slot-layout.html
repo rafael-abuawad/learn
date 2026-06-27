@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference — Storage Slot Layout</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    .mem-diagram {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      line-height: 1.35;
+      overflow-x: auto;
+      white-space: pre;
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1rem;
+      margin: 1rem 0;
+    }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Reference</div>
+  <h1>Storage Slot Layout</h1>
+  <p class="subtitle">Compiler layout vs Solady namespaced slots — big-endian memory edition.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="../lessons/index.html">← Lessons</a>
+  ·
+  <a href="yul-opcodes-cheatsheet.html">← Opcodes</a>
+  ·
+  <a href="glossary.html">Glossary</a>
+</nav>
+
+<h2>Remember: mstore is big-endian</h2>
+
+<p>
+  Each <code>mstore(p, v)</code> writes 32 bytes: MSB of <code>v</code> at <code>mem[p]</code>, LSB at <code>mem[p+31]</code>.
+  A 20-byte address in a word occupies <code>mem[p+12]</code> through <code>mem[p+31]</code> (12 bytes zero padding first).
+</p>
+
+<h2>Solidity compiler layout (baseline)</h2>
+
+<p>For a contract declaring:</p>
+
+<pre><code>uint256 totalSupply;                    // slot 0
+mapping(address => uint256) balances;   // slot 1 (base)
+mapping(address => mapping(address => uint256)) allowances; // slot 2</code></pre>
+
+<p>Slot for <code>balances[owner]</code>:</p>
+
+<pre><code>slot = keccak256(abi.encode(owner, 1))</code></pre>
+
+<p>In Yul scratch form (64-byte hash):</p>
+
+<pre><code>mstore(0x00, owner)    // [12 pad | owner 20B] at mem 0x00..0x1f
+mstore(0x20, 1)         // [12 pad | slot 1]    at mem 0x20..0x3f
+slot := keccak256(0x00, 0x40)</code></pre>
+
+<h2>Solady: 32-byte hash vs 64-byte encode</h2>
+
+<table style="width:100%; font-family: var(--sans); font-size: 0.82rem; border-collapse: collapse;">
+  <tr style="border-bottom: 1px solid var(--border);">
+    <th style="text-align:left; padding: 0.4rem 0;">Approach</th>
+    <th style="text-align:left; padding: 0.4rem 0;">Hash</th>
+    <th style="text-align:left; padding: 0.4rem 0;">Gas</th>
+  </tr>
+  <tr>
+    <td style="padding: 0.35rem 0;">Standard encode</td>
+    <td><code>keccak256(0x00, 0x40)</code></td>
+    <td>64 bytes, two full words</td>
+  </tr>
+  <tr>
+    <td style="padding: 0.35rem 0;">Solady overlap</td>
+    <td><code>keccak256(0x0c, 0x20)</code></td>
+    <td>32 bytes, overlap trick</td>
+  </tr>
+</table>
+
+<h2>Solady namespaced constants</h2>
+
+<pre><code>uint256 private constant _TOTAL_SUPPLY_SLOT = 0x05345cdf77eb68f44c;
+uint256 private constant _BALANCE_SLOT_SEED  = 0x87a211a2;
+uint256 private constant _ALLOWANCE_SLOT_SEED = 0x7f5e9f20;
+uint256 private constant _NONCES_SLOT_SEED = 0x38377508;</code></pre>
+
+<h3>Balance mapping (Pattern A)</h3>
+
+<pre><code>mstore(0x0c, _BALANCE_SLOT_SEED)   // seed → mem[0x28..0x2b]
+mstore(0x00, owner)                 // addr → mem[0x0c..0x1f]
+balanceSlot := keccak256(0x0c, 0x20)</code></pre>
+
+<div class="mem-diagram">Final mem layout (hash region 0x0c..0x2b):
+[ address 20B @ 0x0c..0x1f | pad 8B @ 0x20..0x27 | seed 4B @ 0x28..0x2b ]</div>
+
+<h3>Allowance mapping (Pattern B)</h3>
+
+<pre><code>mstore(0x20, spender)
+mstore(0x0c, _ALLOWANCE_SLOT_SEED)
+mstore(0x00, owner)
+allowanceSlot := keccak256(0x0c, 0x34)   // 52 bytes</code></pre>
+
+<h3>Packed single mstore (Pattern C)</h3>
+
+<pre><code>let from_ := shl(96, from)
+mstore(0x0c, or(from_, _BALANCE_SLOT_SEED))
+fromBalanceSlot := keccak256(0x0c, 0x20)</code></pre>
+
+<p>Same 32-byte preimage as Pattern A — one <code>mstore</code> instead of two.</p>
+
+<p><strong>Not</strong> the same as <code>shr(96, shl(96, from))</code> (address cleaning). See <a href="../lessons/0002-mapping-slots-keccak256.html">Lesson 0002</a>.</p>
+
+<h2>Design choice summary</h2>
+
+<table style="width:100%; font-family: var(--sans); font-size: 0.88rem; border-collapse: collapse;">
+  <tr style="border-bottom: 1px solid var(--border);">
+    <th style="text-align:left; padding: 0.4rem 0;">Approach</th>
+    <th style="text-align:left; padding: 0.4rem 0;">Pros</th>
+    <th style="text-align:left; padding: 0.4rem 0;">Cons</th>
+  </tr>
+  <tr>
+    <td style="padding: 0.35rem 0;">Compiler slots</td>
+    <td>Simple, auditable with standard tools</td>
+    <td>Inheritance can shift slots; extra indirection</td>
+  </tr>
+  <tr>
+    <td style="padding: 0.35rem 0;">Namespaced seeds (Solady)</td>
+    <td>Collision-resistant across inheritance; single-slot totalSupply</td>
+    <td>Must document seeds; tools won’t auto-decode storage</td>
+  </tr>
+</table>
+
+<p>
+  Source: <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady ERC20.sol</a> ·
+  <a href="https://docs.soliditylang.org/en/latest/internals/layout_in_storage.html">Solidity storage layout</a>
+</p>
+
+</body>
+</html>

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0006 — Write Minimal ERC20 Core</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.82rem; margin: 1rem 0; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-weight: 600; }
+    pre { font-size: 0.7rem; }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0006</div>
+  <h1>Write a Minimal ERC20 Core</h1>
+  <p class="subtitle">Annotated Solidity shell — copy into your own project and extend.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="0005-read-transfer-mint.html">← 0005</a>
+  ·
+  <a href="../reference/glossary.html">Glossary</a>
+</nav>
+
+<h2>What you’re building</h2>
+
+<p>
+  A stripped ERC20 with Yul for all hot paths: <code>totalSupply</code>, <code>balanceOf</code>, <code>transfer</code>, <code>_mint</code>, <code>_burn</code>.
+  No permit, no Permit2, no metadata strings, no hooks — same patterns as Solady, fewer features.
+</p>
+
+<h2>Design choices checklist</h2>
+
+<table>
+  <tr><th>Choice</th><th>This minimal core</th><th>Full Solady</th></tr>
+  <tr><td>Storage layout</td><td>Namespaced seeds</td><td>Same</td></tr>
+  <tr><td>Balance slot</td><td>Two-mstore Pattern A</td><td>Also packed in <code>_transfer</code></td></tr>
+  <tr><td>Errors</td><td>3 selectors inline</td><td>7+ errors</td></tr>
+  <tr><td>Events</td><td>Transfer only</td><td>Transfer + Approval</td></tr>
+  <tr><td>Allowance / transferFrom</td><td>Omitted</td><td>Full + Permit2</td></tr>
+  <tr><td>permit (EIP-2612)</td><td>Omitted</td><td>Full — see <a href="0007-permit-eip2612.html">0007</a></td></tr>
+  <tr><td>Hooks</td><td>None</td><td><code>_beforeTokenTransfer</code> / <code>_after</code></td></tr>
+</table>
+
+<h2>Minimal contract</h2>
+
+<p>Copy this into a <code>.sol</code> file in your Foundry/Hardhat project. Annotated comments map each block to lessons 0001–0005.</p>
+
+<pre><code>// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.4;
+
+/// @notice Minimal ERC20 core — Yul patterns from Solady (lessons 0001–0006).
+contract MinimalYulERC20 {
+    // --- Namespaced storage (Lesson 0002) ---
+    uint256 private constant _TOTAL_SUPPLY_SLOT = 0x05345cdf77eb68f44c;
+    uint256 private constant _BALANCE_SLOT_SEED  = 0x87a211a2;
+
+    // --- Precomputed constants (Lessons 0003–0004) ---
+    uint256 private constant _TRANSFER_EVENT_SIGNATURE =
+        0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef;
+
+    error TotalSupplyOverflow();
+    error InsufficientBalance();
+
+    event Transfer(address indexed from, address indexed to, uint256 amount);
+
+    function totalSupply() public view returns (uint256 result) {
+        assembly { result := sload(_TOTAL_SUPPLY_SLOT) }
+    }
+
+    function balanceOf(address owner) public view returns (uint256 result) {
+        assembly {
+            mstore(0x0c, _BALANCE_SLOT_SEED)
+            mstore(0x00, owner)
+            result := sload(keccak256(0x0c, 0x20))
+        }
+    }
+
+    function transfer(address to, uint256 amount) public returns (bool) {
+        assembly {
+            // Phase 1–3: debit sender
+            mstore(0x0c, _BALANCE_SLOT_SEED)
+            mstore(0x00, caller())
+            let fromSlot := keccak256(0x0c, 0x20)
+            let fromBal := sload(fromSlot)
+            if gt(amount, fromBal) {
+                mstore(0x00, 0xf4d678b8) // InsufficientBalance()
+                revert(0x1c, 0x04)
+            }
+            sstore(fromSlot, sub(fromBal, amount))
+
+            // Phase 1–3: credit recipient
+            mstore(0x00, to)
+            let toSlot := keccak256(0x0c, 0x20)
+            sstore(toSlot, add(sload(toSlot), amount))
+
+            // Phase 4: emit
+            mstore(0x20, amount)
+            log3(0x20, 0x20, _TRANSFER_EVENT_SIGNATURE, caller(), shr(96, mload(0x0c)))
+        }
+        return true;
+    }
+
+    function _mint(address to, uint256 amount) internal {
+        assembly {
+            let before := sload(_TOTAL_SUPPLY_SLOT)
+            let after := add(before, amount)
+            if lt(after, before) {
+                mstore(0x00, 0xe5cfe957) // TotalSupplyOverflow()
+                revert(0x1c, 0x04)
+            }
+            sstore(_TOTAL_SUPPLY_SLOT, after)
+
+            mstore(0x0c, _BALANCE_SLOT_SEED)
+            mstore(0x00, to)
+            let slot := keccak256(0x0c, 0x20)
+            sstore(slot, add(sload(slot), amount))
+
+            mstore(0x20, amount)
+            log3(0x20, 0x20, _TRANSFER_EVENT_SIGNATURE, 0, shr(96, mload(0x0c)))
+        }
+    }
+
+    function _burn(address from, uint256 amount) internal {
+        assembly {
+            mstore(0x0c, _BALANCE_SLOT_SEED)
+            mstore(0x00, from)
+            let slot := keccak256(0x0c, 0x20)
+            let bal := sload(slot)
+            if gt(amount, bal) {
+                mstore(0x00, 0xf4d678b8)
+                revert(0x1c, 0x04)
+            }
+            sstore(slot, sub(bal, amount))
+            sstore(_TOTAL_SUPPLY_SLOT, sub(sload(_TOTAL_SUPPLY_SLOT), amount))
+
+            mstore(0x00, amount)
+            log3(0x00, 0x20, _TRANSFER_EVENT_SIGNATURE, shr(96, shl(96, from)), 0)
+        }
+    }
+}</code></pre>
+
+<h2>Exercises (in your own project)</h2>
+
+<ol style="font-family: var(--sans); font-size: 0.92rem; line-height: 1.7;">
+  <li>Add <code>approve</code> + <code>allowance</code> using Pattern B (<code>keccak256(0x0c, 0x34)</code>)</li>
+  <li>Replace two-mstore in <code>transfer</code> with packed <code>or(shl(96, caller()), SEED)</code> for sender slot</li>
+  <li>Add <code>/// @solidity memory-safe-assembly</code> and compare gas with <code>forge test --gas-report</code></li>
+</ol>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="2"
+     data-explain="Namespaced seeds decouple storage from compiler slot order — inherited contracts won't shift your balance mapping base.">
+  <h3>Why seeds</h3>
+  <p class="prompt">Why use _BALANCE_SLOT_SEED instead of Solidity mapping at slot 1?</p>
+  <div class="quiz-options">
+    <button data-index="0">Solidity mappings cannot compile to Yul assembly</button>
+    <button data-index="1">keccak256 requires a four-byte literal seed always</button>
+    <button data-index="2">Avoid inheritance collisions with namespaced layout</button>
+    <button data-index="3">Slot one is always reserved by the EVM spec</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  You have a working mental model and a copy-paste skeleton. You can add features incrementally while keeping Solady’s idioms.
+</div>
+
+<h2>Next</h2>
+<p><strong>Lesson 0007 (bonus)</strong> — EIP-2612 <code>permit</code> in Yul.</p>
+
+<footer class="lesson-footer">
+  <p><strong>Compare with:</strong> <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady ERC20.sol</a></p>
+  <ul>
+    <li><a href="0005-read-transfer-mint.html">← Lesson 0005</a></li>
+    <li><a href="0007-permit-eip2612.html">Lesson 0007 (bonus) →</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

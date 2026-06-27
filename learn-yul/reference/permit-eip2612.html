@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference — EIP-2612 Permit</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.82rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-weight: 600; }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Reference</div>
+  <h1>EIP-2612 Permit</h1>
+  <p class="subtitle">Solady permit() memory layout, hashing, and ecrecover.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="../lessons/index.html">← Lessons</a>
+  ·
+  <a href="events-log3.html">← Events</a>
+</nav>
+
+<h2>Typehashes (precomputed in Solady)</h2>
+
+<table>
+  <tr><th>Constant</th><th>Value</th></tr>
+  <tr><td><code>_DOMAIN_TYPEHASH</code></td><td><code>keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")</code></td></tr>
+  <tr><td><code>_PERMIT_TYPEHASH</code></td><td><code>keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")</code></td></tr>
+  <tr><td><code>_DEFAULT_VERSION_HASH</code></td><td><code>keccak256("1")</code></td></tr>
+  <tr><td><code>_NONCES_SLOT_SEED</code></td><td><code>0x38377508</code></td></tr>
+</table>
+
+<h2>Flow overview</h2>
+
+<ol style="font-family: var(--sans); font-size: 0.92rem; line-height: 1.7;">
+  <li>Revert if <code>block.timestamp &gt; deadline</code></li>
+  <li>Clean <code>owner</code> and <code>spender</code> addresses</li>
+  <li>Load nonce from storage (same slot pattern as <code>nonces(owner)</code>)</li>
+  <li>Build EIP-712 domain separator at free memory pointer <code>m</code></li>
+  <li>Build permit struct hash at <code>m</code></li>
+  <li>Hash <code>0x1901 || domainSeparator || structHash</code></li>
+  <li><code>staticcall</code> ecrecover precompile (address 1)</li>
+  <li>Compare recovered signer to <code>owner</code></li>
+  <li>Increment nonce; store allowance; emit Approval</li>
+</ol>
+
+<h2>Domain separator (at free mem <code>m</code>)</h2>
+
+<pre><code>mstore(m, _DOMAIN_TYPEHASH)
+mstore(add(m, 0x20), nameHash)
+mstore(add(m, 0x40), versionHash)
+mstore(add(m, 0x60), chainid())
+mstore(add(m, 0x80), address())
+domainSeparator := keccak256(m, 0xa0)</code></pre>
+
+<h2>ecrecover call</h2>
+
+<pre><code>mstore(0x00, digest)      // keccak256("\x19\x01" || domain || structHash)
+mstore(0x20, and(0xff, v))
+mstore(0x40, r)
+mstore(0x60, s)
+let t := staticcall(gas(), 1, 0x00, 0x80, 0x20, 0x20)
+if iszero(eq(mload(returndatasize()), owner)) { revert InvalidPermit }
+sstore(nonceSlot, add(nonceValue, t))   // t=1 only if ecrecover succeeds</code></pre>
+
+<h2>Nonce slot</h2>
+
+<pre><code>mstore(0x0c, _NONCES_SLOT_SEED)
+mstore(0x00, owner)
+nonceSlot := keccak256(0x0c, 0x20)</code></pre>
+
+<p>Same Pattern A as balances — different seed constant.</p>
+
+<p>Source: <a href="https://eips.ethereum.org/EIPS/eip-2612">EIP-2612</a> · <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady permit()</a></p>
+
+</body>
+</html>

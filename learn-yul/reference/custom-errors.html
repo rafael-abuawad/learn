@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference — Custom Errors in Yul</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    table { width: 100%; border-collapse: collapse; font-family: var(--sans); font-size: 0.82rem; }
+    th, td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-weight: 600; }
+    .mem-diagram { font-family: var(--mono); font-size: 0.72rem; white-space: pre; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; margin: 1rem 0; overflow-x: auto; }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Reference</div>
+  <h1>Custom Errors in Yul</h1>
+  <p class="subtitle">Solady ERC20 error selectors and the revert(0x1c, 0x04) pattern.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="../lessons/index.html">← Lessons</a>
+  ·
+  <a href="events-log3.html">Events →</a>
+</nav>
+
+<h2>Solidity → selector</h2>
+
+<p>
+  <code>error Foo()</code> reverts with <code>bytes4(keccak256("Foo()"))</code> as the first 4 bytes of returndata.
+  Solady precomputes these as hex literals in assembly.
+</p>
+
+<table>
+  <tr><th>Error</th><th>Selector</th></tr>
+  <tr><td><code>TotalSupplyOverflow()</code></td><td><code>0xe5cfe957</code></td></tr>
+  <tr><td><code>InsufficientBalance()</code></td><td><code>0xf4d678b8</code></td></tr>
+  <tr><td><code>InsufficientAllowance()</code></td><td><code>0x13be252b</code></td></tr>
+  <tr><td><code>InvalidPermit()</code></td><td><code>0xddafbaef</code></td></tr>
+  <tr><td><code>PermitExpired()</code></td><td><code>0x1a15a3cc</code></td></tr>
+  <tr><td><code>Permit2AllowanceIsFixedAtInfinity()</code></td><td><code>0x3f68539a</code></td></tr>
+</table>
+
+<h2>Revert pattern</h2>
+
+<pre><code>if gt(amount, fromBalance) {
+    mstore(0x00, 0xf4d678b8)   // InsufficientBalance()
+    revert(0x1c, 0x04)
+}</code></pre>
+
+<h3>Why revert(0x1c, 0x04)?</h3>
+
+<p><code>mstore</code> is big-endian. A 4-byte selector in the low 32 bits of a word lands at the <em>end</em> of the 32-byte write:</p>
+
+<div class="mem-diagram">mstore(0x00, 0xf4d678b8)
+
+mem:  0x00 ─────────────────────── 0x1b │ 0x1c 0x1d 0x1e 0x1f
+      [        28 zero bytes         ] [ f4 d6 78 b8 ]
+                                      └── revert(0x1c, 0x04) ──┘</div>
+
+<p>Offset <code>0x1c</code> + length <code>0x04</code> returns exactly the selector — no extra ABI encoding.</p>
+
+<h2>Control-flow idioms</h2>
+
+<table>
+  <tr><th>Intent</th><th>Yul</th></tr>
+  <tr><td>Revert if insufficient</td><td><code>if gt(amount, balance) { mstore…; revert… }</code></td></tr>
+  <tr><td>Skip if allowance is max</td><td><code>if not(allowance_) { … }</code> — true when allowance is zero; max uint256 is also handled via <code>add(allowance_, 1)</code> trick</td></tr>
+  <tr><td>Infinite allowance check</td><td><code>if add(allowance_, 1) { … spend … }</code> — false when allowance is <code>type(uint256).max</code></td></tr>
+  <tr><td>Clean address before eq</td><td><code>owner := shr(96, shl(96, owner))</code></td></tr>
+</table>
+
+<p>Source: <a href="https://docs.soliditylang.org/en/latest/contracts.html#errors-and-the-revert-statement">Solidity errors</a> · <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady ERC20.sol</a></p>
+
+</body>
+</html>

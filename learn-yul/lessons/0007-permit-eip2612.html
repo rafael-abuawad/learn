@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0007 — EIP-2612 Permit (Bonus)</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0007 · Bonus</div>
+  <h1>EIP-2612 Permit in Yul</h1>
+  <p class="subtitle">EIP-712 hashing, ecrecover, and nonce — the hardest block in Solady ERC20.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="0006-write-minimal-erc20.html">← 0006</a>
+  ·
+  <a href="../reference/permit-eip2612.html">Permit reference</a>
+</nav>
+
+<h2>What permit adds</h2>
+
+<p>
+  <code>permit(owner, spender, value, deadline, v, r, s)</code> sets allowance via an off-chain signature —
+  no <code>approve</code> transaction. Solady implements the full EIP-2612 + EIP-712 flow in one assembly block.
+</p>
+
+<p>Primary source: <a href="https://eips.ethereum.org/EIPS/eip-2612">EIP-2612</a> · <a href="../reference/permit-eip2612.html">Permit reference</a>.</p>
+
+<h2>Step 1 — deadline and address cleaning</h2>
+
+<pre><code><span class="keyword">if</span> <span class="fn">gt</span>(<span class="fn">timestamp</span>(), deadline) {
+    <span class="fn">mstore</span>(0x00, 0x1a15a3cc)   <span class="comment">// PermitExpired()</span>
+    <span class="fn">revert</span>(0x1c, 0x04)
+}
+owner := <span class="fn">shr</span>(96, <span class="fn">shl</span>(96, owner))
+spender := <span class="fn">shr</span>(96, <span class="fn">shl</span>(96, spender))</code></pre>
+
+<h2>Step 2 — load nonce</h2>
+
+<pre><code><span class="fn">mstore</span>(0x0c, _NONCES_SLOT_SEED)
+<span class="fn">mstore</span>(0x00, owner)
+<span class="keyword">let</span> nonceSlot := <span class="fn">keccak256</span>(0x0c, 0x20)
+<span class="keyword">let</span> nonceValue := <span class="fn">sload</span>(nonceSlot)</code></pre>
+
+<p>Same Pattern A as <code>balanceOf</code> — different seed (<code>_NONCES_SLOT_SEED = 0x38377508</code>).</p>
+
+<h2>Step 3 — EIP-712 digest</h2>
+
+<p>At free memory pointer <code>m := mload(0x40)</code>:</p>
+
+<ol style="font-family: var(--sans); font-size: 0.92rem; line-height: 1.7;">
+  <li>Hash domain: <code>keccak256(EIP712Domain typehash, nameHash, versionHash, chainid, address(this))</code></li>
+  <li>Hash struct: <code>keccak256(Permit typehash, owner, spender, value, nonce, deadline)</code></li>
+  <li>Final digest: <code>keccak256(0x1901 || domainSeparator || structHash)</code></li>
+</ol>
+
+<p>Solady packs intermediate hashes into scratch at <code>0x2e</code> and <code>0x4e</code> before the final <code>keccak256(0x2c, 0x42)</code>.</p>
+
+<h2>Step 4 — ecrecover</h2>
+
+<pre><code><span class="fn">mstore</span>(0x00, digest)
+<span class="fn">mstore</span>(0x20, <span class="fn">and</span>(0xff, v))
+<span class="fn">mstore</span>(0x40, r)
+<span class="fn">mstore</span>(0x60, s)
+<span class="keyword">let</span> t := <span class="fn">staticcall</span>(<span class="fn">gas</span>(), 1, 0x00, 0x80, 0x20, 0x20)
+<span class="keyword">if</span> <span class="fn">iszero</span>(<span class="fn">eq</span>(<span class="fn">mload</span>(<span class="fn">returndatasize</span>()), owner)) {
+    <span class="fn">mstore</span>(0x00, 0xddafbaef)   <span class="comment">// InvalidPermit()</span>
+    <span class="fn">revert</span>(0x1c, 0x04)
+}</code></pre>
+
+<p>
+  Precompile address <code>1</code> = ecrecover.
+  Clever nonce bump: <code>sstore(nonceSlot, add(nonceValue, t))</code> — increments only when <code>t = 1</code> (success).
+</p>
+
+<h2>Step 5 — set allowance + emit</h2>
+
+<pre><code><span class="comment">// allowance slot — packed owner/spender layout</span>
+<span class="fn">mstore</span>(0x40, <span class="fn">or</span>(<span class="fn">shl</span>(160, _ALLOWANCE_SLOT_SEED), spender))
+<span class="fn">sstore</span>(<span class="fn">keccak256</span>(0x2c, 0x34), value)
+<span class="fn">log3</span>(add(m, 0x60), 0x20, _APPROVAL_EVENT_SIGNATURE, owner, spender)</code></pre>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="1"
+     data-explain="add(nonceValue, t) adds 1 only when staticcall succeeds (t=1). Failed ecrecover leaves nonce unchanged.">
+  <h3>Nonce bump</h3>
+  <p class="prompt">Why does Solady use sstore(nonceSlot, add(nonceValue, t)) after ecrecover?</p>
+  <div class="quiz-options">
+    <button data-index="0">t holds the new allowance value from calldata</button>
+    <button data-index="1">Increment nonce only when ecrecover succeeds</button>
+    <button data-index="2">t is always one — unconditional nonce increment</button>
+    <button data-index="3">t stores gas remaining after the staticcall</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="0"
+     data-explain="EIP-712 signed data uses 0x1901 as prefix byte before domain separator and struct hash — not the ERC-191 version alone.">
+  <h3>Digest prefix</h3>
+  <p class="prompt">The permit digest uses which prefix before domain and struct hashes?</p>
+  <div class="quiz-options">
+    <button data-index="0">Bytes 0x1901 — EIP-712 version prefix</button>
+    <button data-index="1">Bytes 0x1919 — Ethereum signed message prefix</button>
+    <button data-index="2">Four-byte function selector of permit()</button>
+    <button data-index="3">No prefix — raw keccak of concatenated fields</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  You can skim Solady’s <code>permit()</code> and identify: deadline check, nonce load, domain hash, struct hash, ecrecover, allowance store, Approval emit.
+</div>
+
+<h2>Curriculum complete</h2>
+<p>
+  You’ve covered the full Solady ERC20 Yul surface: storage, errors, events, transfer/mint/burn, minimal write-up, and permit.
+  Keep <a href="../reference/glossary.html">the glossary</a> open when reading other Solady contracts.
+</p>
+
+<footer class="lesson-footer">
+  <p><strong>Primary source:</strong> <a href="https://eips.ethereum.org/EIPS/eip-2612">EIP-2612</a> · <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady permit()</a></p>
+  <ul>
+    <li><a href="0006-write-minimal-erc20.html">← Lesson 0006</a></li>
+    <li><a href="index.html">Lesson index</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>

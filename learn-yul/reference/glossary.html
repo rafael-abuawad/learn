@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Reference — Yul Glossary</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    dl { font-family: var(--sans); font-size: 0.9rem; }
+    dt { font-weight: 600; margin-top: 1.25rem; }
+    dd { margin: 0.35rem 0 0 0; color: var(--muted); line-height: 1.5; }
+    dd em { color: var(--fg); font-style: normal; }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Reference</div>
+  <h1>Yul Glossary</h1>
+  <p class="subtitle">Canonical terms for this workspace — use these words consistently.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="../lessons/index.html">← Lessons</a>
+</nav>
+
+<dl>
+  <dt>Inline assembly</dt>
+  <dd><em>Yul embedded inside Solidity</em> via <code>assembly { … }</code>. Solady ERC20 hot paths live here.</dd>
+
+  <dt>Scratch band</dt>
+  <dd>Fixed memory region <code>0x00–0x3f</code> reused to build <code>keccak256</code> inputs without allocating dynamic memory.</dd>
+
+  <dt>Namespaced seed</dt>
+  <dd>A pseudorandom constant (e.g. <code>_BALANCE_SLOT_SEED</code>) replacing compiler slot numbers to avoid inheritance storage collisions.</dd>
+
+  <dt>Big-endian mstore</dt>
+  <dd>Each <code>mstore</code> writes MSB-first within a 32-byte word. Addresses land at <code>mem[offset+12..offset+31]</code>.</dd>
+
+  <dt>Hash offset 0x0c</dt>
+  <dd>Start <code>keccak256</code> at byte 12 — skips ABI padding before an address, includes seed tail in a 32-byte preimage.</dd>
+
+  <dt>Clean (shr/shl)</dt>
+  <dd><code>shr(96, shl(96, addr))</code> — canonical address in low 160 bits. For comparisons and ecrecover checks.</dd>
+
+  <dt>Pack (shl/or)</dt>
+  <dd><code>or(shl(96, addr), seed)</code> — address and seed in one word for a single <code>mstore</code> + hash.</dd>
+
+  <dt>Custom error selector</dt>
+  <dd>First 4 bytes of <code>keccak256("ErrorName()")</code>. Reverted via <code>mstore(0x00, sel); revert(0x1c, 0x04)</code>.</dd>
+
+  <dt>Topic0</dt>
+  <dd>Event signature hash — first indexed topic in <code>log3</code>. Precomputed as <code>_TRANSFER_EVENT_SIGNATURE</code> etc.</dd>
+
+  <dt>log3</dt>
+  <dd>EVM opcode: emit event with 3 indexed topics + non-indexed data from memory.</dd>
+
+  <dt>Memory-safe-assembly</dt>
+  <dd>Solidity annotation telling the compiler the block respects free-memory-pointer rules at <code>0x40</code>.</dd>
+</dl>
+
+</body>
+</html>

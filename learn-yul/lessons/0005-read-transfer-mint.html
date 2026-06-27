@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lesson 0005 — Read Transfer &amp; Mint</title>
+  <link rel="stylesheet" href="../assets/teach.css">
+  <style>
+    .flow { font-family: var(--mono); font-size: 0.75rem; line-height: 1.5; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 1rem; margin: 1rem 0; overflow-x: auto; }
+    .step { font-family: var(--sans); font-size: 0.88rem; margin: 0.5rem 0; padding-left: 1rem; border-left: 3px solid var(--accent); }
+  </style>
+</head>
+<body>
+
+<header class="lesson-header">
+  <div class="lesson-num">Lesson 0005</div>
+  <h1>Read Transfer &amp; Mint</h1>
+  <p class="subtitle">Line-by-line integration — slot, load, check, store, emit.</p>
+</header>
+
+<nav class="lesson-nav">
+  <a href="index.html">← All lessons</a>
+  ·
+  <a href="0004-events-log3.html">← 0004</a>
+  ·
+  <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady ERC20.sol</a>
+</nav>
+
+<h2>The four-phase pattern</h2>
+
+<p>Every Solady token movement follows the same skeleton:</p>
+
+<div class="flow">1. COMPUTE SLOT  →  mstore scratch + keccak256
+2. LOAD + CHECK  →  sload, if gt … revert
+3. STORE         →  sstore updated balances (and supply for mint/burn)
+4. EMIT          →  mstore amount + log3</div>
+
+<p>No new opcodes — this lesson wires lessons 0001–0004 together.</p>
+
+<h2>transfer(to, amount) — public entry</h2>
+
+<p>Uses <strong>two-mstore</strong> slot pattern (Pattern A from lesson 0002):</p>
+
+<div class="step"><strong>Phase 1 — sender slot:</strong> <code>mstore(0x0c, SEED); mstore(0x00, caller()); keccak256(0x0c, 0x20)</code></div>
+<div class="step"><strong>Phase 2 — check:</strong> <code>sload</code> balance; <code>if gt(amount, fromBalance) revert InsufficientBalance</code></div>
+<div class="step"><strong>Phase 3a — debit:</strong> <code>sstore(fromSlot, sub(fromBalance, amount))</code></div>
+<div class="step"><strong>Phase 1b — recipient slot:</strong> <code>mstore(0x00, to); keccak256(0x0c, 0x20)</code> (seed still at 0x28..0x2b)</div>
+<div class="step"><strong>Phase 3b — credit:</strong> <code>sstore(toSlot, add(sload(toSlot), amount))</code></div>
+<div class="step"><strong>Phase 4 — emit:</strong> <code>mstore(0x20, amount); log3(…, caller(), shr(96, mload(0x0c)))</code></div>
+
+<h2>_transfer(from, to, amount) — internal, packed</h2>
+
+<p>Same four phases, but Phase 1 uses <strong>one mstore</strong>:</p>
+
+<pre><code><span class="keyword">let</span> from_ := <span class="fn">shl</span>(96, from)
+<span class="fn">mstore</span>(0x0c, <span class="fn">or</span>(from_, _BALANCE_SLOT_SEED))
+fromBalanceSlot := <span class="fn">keccak256</span>(0x0c, 0x20)</code></pre>
+
+<p>Same storage slot as two-mstore — fewer writes, same math. Recipient side still uses two-mstore with <code>mstore(0x00, to)</code>.</p>
+
+<h2>_mint(to, amount)</h2>
+
+<div class="step"><strong>Supply check:</strong> <code>if lt(add(supply, amount), supply) revert TotalSupplyOverflow</code></div>
+<div class="step"><strong>Supply store:</strong> <code>sstore(_TOTAL_SUPPLY_SLOT, totalSupplyAfter)</code> — direct slot, no hash</div>
+<div class="step"><strong>Balance credit:</strong> same Pattern A slot + <code>sstore(add(sload(slot), amount))</code></div>
+<div class="step"><strong>Emit:</strong> <code>log3(…, 0, shr(96, mload(0x0c)))</code> — <code>from = address(0)</code></div>
+
+<h2>_burn(from, amount)</h2>
+
+<p>Mirror of mint:</p>
+
+<ul>
+  <li>Debit <code>from</code> balance with InsufficientBalance check</li>
+  <li>Decrement <code>_TOTAL_SUPPLY_SLOT</code></li>
+  <li>Emit with <code>to = 0</code>, cleaned <code>from</code> as topic</li>
+</ul>
+
+<h2>Retrieval practice</h2>
+
+<div class="quiz" data-quiz data-correct="1"
+     data-explain="After debiting the sender, mstore(0x00, to) reuses scratch — seed at 0x28..0x2b persists from the first mstore(0x0c, SEED). Only the owner word at 0x00..0x1f is overwritten.">
+  <h3>Transfer ordering</h3>
+  <p class="prompt">In transfer(), after debiting the sender, what happens before crediting to?</p>
+  <div class="quiz-options">
+    <button data-index="0">Fresh mstore(0x0c, SEED) must run again first</button>
+    <button data-index="1">mstore(0x00, to) then keccak256(0x0c, 0x20)</button>
+    <button data-index="2">sstore totalSupply before any balance update</button>
+    <button data-index="3">log3 emits before both balance sstores finish</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="0"
+     data-explain="_mint increases _TOTAL_SUPPLY_SLOT via direct sload/sstore — no keccak256. Only mapping values (balances) use hashed slots.">
+  <h3>Mint supply</h3>
+  <p class="prompt">How does _mint update totalSupply compared to balances?</p>
+  <div class="quiz-options">
+    <button data-index="0">Direct sstore to _TOTAL_SUPPLY_SLOT constant</button>
+    <button data-index="1">keccak256 scratch hash like balance mapping uses</button>
+    <button data-index="2">Add to caller balance only — no supply tracking</button>
+    <button data-index="3">External call to a supply oracle contract first</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="quiz" data-quiz data-correct="2"
+     data-explain="Both compute the same balance slot for the same address. _transfer saves one mstore on the from side via or(shl(96, from), SEED).">
+  <h3>Two paths</h3>
+  <p class="prompt">transfer() vs _transfer() — what differs on the from balance slot?</p>
+  <div class="quiz-options">
+    <button data-index="0">Different seed constants are used per function</button>
+    <button data-index="1">_transfer skips the InsufficientBalance revert check</button>
+    <button data-index="2">Same slot math — packed vs two mstore only</button>
+    <button data-index="3">transfer uses allowance slot instead of balance</button>
+  </div>
+  <div class="quiz-feedback"></div>
+</div>
+
+<div class="callout">
+  <strong>Your win for this lesson</strong>
+  Open Solady ERC20.sol and narrate <code>transfer</code>, <code>_mint</code>, and <code>_burn</code> as four-phase flows without pausing.
+</div>
+
+<h2>Next</h2>
+<p><strong>Lesson 0006</strong> — write your own minimal ERC20 core in inline assembly.</p>
+
+<footer class="lesson-footer">
+  <p><strong>Primary source:</strong> <a href="https://github.com/Vectorized/solady/blob/main/src/tokens/ERC20.sol">Solady ERC20.sol</a></p>
+  <ul>
+    <li><a href="0004-events-log3.html">← Lesson 0004</a></li>
+    <li><a href="0006-write-minimal-erc20.html">Lesson 0006 →</a></li>
+  </ul>
+</footer>
+
+<script src="../assets/quiz.js"></script>
+</body>
+</html>
